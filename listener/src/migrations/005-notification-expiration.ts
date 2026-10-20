@@ -44,7 +44,7 @@ async function auditLegacyRows(db: sqlite3.Database): Promise<void> {
       table: 'notification_execution_log',
       sql: `SELECT COUNT(*) AS count FROM notification_execution_log l
         WHERE l.scheduled_notification_id IS NULL OR l.execution_attempt <= 0
-          OR l.execution_time IS NULL OR l.status NOT IN ('SUCCESS', 'FAILED', 'RETRY')
+          OR l.execution_time IS NULL OR l.status NOT IN ('SUCCESS', 'FAILED', 'RETRY', 'DEAD_LETTERED')
           OR (l.duration_ms IS NOT NULL AND l.duration_ms < 0)
           OR NOT EXISTS (SELECT 1 FROM scheduled_notifications n WHERE n.id = l.scheduled_notification_id)`,
     },
@@ -123,7 +123,7 @@ const migration = {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         payload TEXT NOT NULL,
         payload_hash TEXT,
-        notification_type VARCHAR(50) NOT NULL CHECK (notification_type IN ('discord', 'email', 'webhook', 'sms')),
+        notification_type VARCHAR(50) NOT NULL CHECK (LOWER(notification_type) IN ('discord', 'email', 'webhook', 'sms')),
         target_recipient TEXT NOT NULL,
         execute_at DATETIME NOT NULL,
         expires_at DATETIME,
@@ -168,7 +168,7 @@ const migration = {
         scheduled_notification_id INTEGER NOT NULL,
         execution_attempt INTEGER NOT NULL CHECK (execution_attempt > 0),
         execution_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        status VARCHAR(20) NOT NULL CHECK (status IN ('SUCCESS', 'FAILED', 'RETRY')),
+        status VARCHAR(20) NOT NULL CHECK (status IN ('SUCCESS', 'FAILED', 'RETRY', 'DEAD_LETTERED')),
         error_message TEXT,
         response_data TEXT,
         duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
@@ -185,7 +185,7 @@ const migration = {
       `CREATE TABLE dead_letter_queue_v005 (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         scheduled_notification_id INTEGER NOT NULL UNIQUE,
-        notification_type VARCHAR(50) NOT NULL CHECK (notification_type IN ('discord', 'email', 'webhook', 'sms')),
+        notification_type VARCHAR(50) NOT NULL CHECK (LOWER(notification_type) IN ('discord', 'email', 'webhook', 'sms')),
         target_recipient TEXT NOT NULL,
         payload TEXT NOT NULL,
         failure_reason TEXT NOT NULL,
@@ -220,7 +220,7 @@ const migration = {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         original_id INTEGER NOT NULL,
         payload TEXT NOT NULL,
-        notification_type VARCHAR(50) NOT NULL CHECK (notification_type IN ('discord', 'email', 'webhook', 'sms')),
+        notification_type VARCHAR(50) NOT NULL CHECK (LOWER(notification_type) IN ('discord', 'email', 'webhook', 'sms')),
         target_recipient TEXT NOT NULL,
         execute_at DATETIME NOT NULL,
         expires_at DATETIME,
@@ -279,6 +279,9 @@ const migration = {
       'CREATE INDEX IF NOT EXISTS idx_scheduled_notifications_status_created ON scheduled_notifications(status, created_at)',
       'CREATE INDEX IF NOT EXISTS idx_scheduled_notifications_type_status ON scheduled_notifications(notification_type, status)',
       'CREATE INDEX IF NOT EXISTS idx_scheduled_notifications_contract ON scheduled_notifications(contract_address) WHERE contract_address IS NOT NULL',
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduled_notifications_dedup_key ON scheduled_notifications(deduplication_key) WHERE deduplication_key IS NOT NULL',
+      "CREATE INDEX IF NOT EXISTS idx_scheduled_notifications_archivable ON scheduled_notifications(processing_completed_at) WHERE status IN ('COMPLETED','FAILED','CANCELLED')",
+      'CREATE INDEX IF NOT EXISTS idx_scheduled_notifications_type_lower_created ON scheduled_notifications(LOWER(notification_type), created_at)',
       'CREATE INDEX IF NOT EXISTS idx_execution_log_notification_id ON notification_execution_log(scheduled_notification_id)',
       'CREATE INDEX IF NOT EXISTS idx_execution_log_execution_time ON notification_execution_log(execution_time)',
       'CREATE INDEX IF NOT EXISTS idx_execution_log_status_execution_time ON notification_execution_log(status, execution_time)',
